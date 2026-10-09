@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Blood Donation System</title>
+<style>
+:root{--red:#c62828;--bg:#fafafa;--card:#fff;--line:#e5e5e5;--ink:#222}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--ink)}
+header{background:var(--red);color:#fff;padding:14px 20px;display:flex;gap:6px 18px;align-items:center;flex-wrap:wrap}
+header .brand{font-size:1.2rem;font-weight:700;margin-right:10px}
+header a{color:#fff;text-decoration:none;font-weight:500;padding:4px 8px;border-radius:6px;cursor:pointer}
+header a.active{background:rgba(255,255,255,.22)}
+main{max-width:1000px;margin:20px auto;padding:0 16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px;overflow-x:auto}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.stats .card{margin:0}
+.stat b{display:block;font-size:1.8rem;color:var(--red)}
+h3{margin:0 0 10px}
+table{width:100%;border-collapse:collapse;font-size:.92rem}
+th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{background:#f3f3f3}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+label{font-size:.8rem;display:block;color:#555}
+input,select{padding:7px;border:1px solid #bbb;border-radius:6px;font:inherit}
+button{background:var(--red);color:#fff;border:0;border-radius:6px;padding:7px 12px;cursor:pointer;font:inherit}
+button.ghost{background:#eee;color:#333}
+.tag{padding:2px 8px;border-radius:99px;font-size:.78rem;background:#eee;display:inline-block;margin:2px}
+.Critical{background:#c62828;color:#fff}.High{background:#ef6c00;color:#fff}
+.Medium{background:#f9a825}.Low{background:#66bb6a;color:#fff}
+.ok{color:#2e7d32}.no{color:#999}
+.flash{background:#e8f5e9;border:1px solid #a5d6a7;padding:10px;border-radius:8px;margin-bottom:12px}
+footer{text-align:center;color:#777;font-size:.8rem;margin:24px 0}
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">🩸 Blood Donation System</span>
+  <a data-nav="home">Dashboard</a>
+  <a data-nav="donors">Donors</a>
+  <a data-nav="requests">Requests</a>
+  <a data-nav="donations">Donations</a>
+</header>
+<main id="app"></main>
+<footer>Data is saved in your browser (localStorage). <a href="#" id="reset">Reset sample data</a></footer>
+
+<script>
+const KEY = "bds_v1";
+const ELIGIBLE_DAYS = 90;
+const GROUPS = ["A+","A-","B+","B-","AB+","AB-","O+","O-"];
+const COMPAT = {
+  "A+":["A+","A-","O+","O-"], "A-":["A-","O-"],
+  "B+":["B+","B-","O+","O-"], "B-":["B-","O-"],
+  "AB+":GROUPS, "AB-":["A-","B-","AB-","O-"],
+  "O+":["O+","O-"], "O-":["O-"]
+};
+const URG = {Critical:1, High:2, Medium:3, Low:4};
+
+const pick = a => a[Math.floor(Math.random()*a.length)];
+const rnd = (a,b) => a + Math.floor(Math.random()*(b-a+1));
+const iso = d => d.toISOString().slice(0,10);
+const daysAgo = n => { const d = new Date(); d.setDate(d.getDate()-n); return iso(d); };
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function seed() {
+  const first = ["Rahim","Karim","Sohan","Rana","Hasan","Nusrat","Mim","Tania","Sakib","Rafi","Anika","Sumaiya","Imran","Nabil","Farhan","Jannat"];
+  const last = ["Ahmed","Hossain","Islam","Khan","Chowdhury","Sarker","Uddin","Akter"];
+  const cities = ["Dhaka","Chattogram","Sylhet","Rajshahi","Khulna","Barishal","Rangpur"];
+  const hosp = ["Dhaka Medical College","Square Hospital","Evercare Hospital","Chattogram Medical","Sylhet MAG Osmani","Khulna Medical College"];
+  const s = {donors:[], requests:[], donations:[], nd:1, nr:1, nn:1};
+  for (let i=0;i<60;i++) s.donors.push({
+    donor_id:s.nd++, name:pick(first)+" "+pick(last), blood_group:pick(GROUPS),
+    phone:"01"+rnd(300000000,999999999), city:pick(cities),
+    last_donation_date: Math.random()<0.2 ? null : daysAgo(rnd(5,400))
+  });
+  for (let i=0;i<15;i++) s.requests.push({
+    request_id:s.nr++, patient_name:pick(first)+" "+pick(last), blood_group_needed:pick(GROUPS),
+    hospital_name:pick(hosp), urgency_level:pick(["Low","Medium","High","Critical"]),
+    request_date:daysAgo(rnd(0,20)), status:"Open"
+  });
+  return s;
+}
+
+let S;
+try { S = JSON.parse(localStorage.getItem(KEY)); } catch (e) { S = null; }
+if (!S || !S.donors) S = seed();
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} };
+save();
+
+const eligible = d => !d.last_donation_date || d.last_donation_date <= daysAgo(ELIGIBLE_DAYS);
+const opts = (sel="") => GROUPS.map(g => `<option ${g===sel?"selected":""}>${g}</option>`).join("");
+
+let view = "home", ctx = {}, flash = "";
+
+function matches(req, exact) {
+  const groups = exact ? [req.blood_group_needed] : COMPAT[req.blood_group_needed];
+  return S.donors.filter(d => eligible(d) && groups.includes(d.blood_group))
+    .sort((a,b) =>
+      (b.blood_group===req.blood_group_needed) - (a.blood_group===req.blood_group_needed) ||
+      (a.last_donation_date||"") .localeCompare(b.last_donation_date||""));
+}
+
+const views = {
+  home() {
+    const avail = S.donors.filter(eligible);
+    const byGroup = GROUPS.map(g => [g, avail.filter(d=>d.blood_group===g).length]);
+    const urgent = S.requests.filter(r=>r.status==="Open")
+      .sort((a,b)=>URG[a.urgency_level]-URG[b.urgency_level] || a.request_date.localeCompare(b.request_date)).slice(0,8);
+    return `
+    <div class="stats">
+      <div class="card stat"><b>${S.donors.length}</b>Total donors</div>
+      <div class="card stat"><b>${avail.length}</b>Available now</div>
+      <div class="card stat"><b>${S.requests.filter(r=>r.status==="Open").length}</b>Open requests</div>
+      <div class="card stat"><b>${S.donations.length}</b>Donations</div>
+    </div><br>
+    <div class="card"><h3>Available donors by blood group</h3>
+      ${byGroup.map(([g,c])=>`<span class="tag">${g}: ${c}</span>`).join("")}</div>
+    <div class="card"><h3>Most urgent open requests</h3>
+      <table><tr><th>Patient</th><th>Group</th><th>Hospital</th><th>Urgency</th><th></th></tr>
+      ${urgent.map(r=>`<tr><td>${esc(r.patient_name)}</td><td>${r.blood_group_needed}</td><td>${esc(r.hospital_name)}</td>
+        <td><span class="tag ${r.urgency_level}">${r.urgency_level}</span></td>
+        <td><button data-match="${r.request_id}">Find donors</button></td></tr>`).join("") ||
+        `<tr><td colspan="5">No open requests.</td></tr>`}
+      </table></div>`;
+  },
+
+  donors() {
+    const f = ctx.f || {bg:"", city:"", only:false};
+    let rows = S.donors.filter(d =>
+      (!f.bg || d.blood_group===f.bg) &&
+      (!f.city || (d.city||"").toLowerCase().includes(f.city.toLowerCase())) &&
+      (!f.only || eligible(d)));
+    rows.sort((a,b)=>a.name.localeCompare(b.name));
+    return `
+    <div class="card"><h3>Add donor</h3>
+      <form id="addDonor" class="row">
+        <div><label>Name</label><input name="name" required></div>
+        <div><label>Blood group</label><select name="blood_group">${opts()}</select></div>
+        <div><label>Phone</label><input name="phone"></div>
+        <div><label>City</label><input name="city"></div>
+        <div><label>Last donation</label><input type="date" name="last"></div>
+        <button>Add</button>
+      </form></div>
+    <div class="card">
+      <form id="filter" class="row">
+        <div><label>Blood group</label><select name="bg"><option value="">All</option>${opts(f.bg)}</select></div>
+        <div><label>City</label><input name="city" value="${esc(f.city)}"></div>
+        <label><input type="checkbox" name="only" ${f.only?"checked":""}> Available only</label>
+        <button>Filter</button>
+      </form></div>
+    <div class="card">
+      <table><tr><th>Name</th><th>Group</th><th>Phone</th><th>City</th><th>Last donation</th><th>Status</th></tr>
+      ${rows.map(d=>`<tr><td>${esc(d.name)}</td><td>${d.blood_group}</td><td>${esc(d.phone)}</td><td>${esc(d.city)}</td>
+        <td>${d.last_donation_date||"—"}</td>
+        <td>${eligible(d)?'<span class="ok">Available</span>':'<span class="no">Resting</span>'}</td></tr>`).join("")}
+      </table><p>${rows.length} donors</p></div>`;
+  },
+
+  requests() {
+    const rows = [...S.requests].sort((a,b)=>b.request_id-a.request_id);
+    return `
+    <div class="card"><h3>New blood request</h3>
+      <form id="addReq" class="row">
+        <div><label>Patient</label><input name="patient" required></div>
+        <div><label>Blood group</label><select name="group">${opts()}</select></div>
+        <div><label>Hospital</label><input name="hospital"></div>
+        <div><label>Urgency</label><select name="urgency"><option>Low</option><option selected>Medium</option><option>High</option><option>Critical</option></select></div>
+        <button>Create</button>
+      </form></div>
+    <div class="card">
+      <table><tr><th>#</th><th>Patient</th><th>Group</th><th>Hospital</th><th>Urgency</th><th>Date</th><th>Status</th><th></th></tr>
+      ${rows.map(r=>`<tr><td>${r.request_id}</td><td>${esc(r.patient_name)}</td><td>${r.blood_group_needed}</td><td>${esc(r.hospital_name)}</td>
+        <td><span class="tag ${r.urgency_level}">${r.urgency_level}</span></td><td>${r.request_date}</td><td>${r.status}</td>
+        <td>${r.status==="Open"?`<button data-match="${r.request_id}">Match</button>`:""}</td></tr>`).join("")}
+      </table></div>`;
+  },
+
+  match() {
+    const req = S.requests.find(r=>r.request_id===ctx.id);
+    if (!req) return `<div class="card">Request not found.</div>`;
+    const ds = matches(req, !!ctx.exact);
+    return `
+    <div class="card">
+      <h3>Request #${req.request_id} — ${esc(req.patient_name)} needs <b>${req.blood_group_needed}</b></h3>
+      <p>${esc(req.hospital_name)} · <span class="tag ${req.urgency_level}">${req.urgency_level}</span> · status: ${req.status}</p>
+      <button class="${ctx.exact?"ghost":""}" data-mode="0">Compatible groups</button>
+      <button class="${ctx.exact?"":"ghost"}" data-mode="1">Exact group only</button></div>
+    <div class="card">
+      <table><tr><th>Donor</th><th>Group</th><th>Phone</th><th>City</th><th>Last donation</th><th></th></tr>
+      ${ds.map(d=>`<tr><td>${esc(d.name)}</td><td>${d.blood_group}</td><td>${esc(d.phone)}</td><td>${esc(d.city)}</td>
+        <td>${d.last_donation_date||"—"}</td>
+        <td>${req.status==="Open"?`<button data-donate="${d.donor_id}" data-req="${req.request_id}">Record donation</button>`:""}</td></tr>`).join("") ||
+        `<tr><td colspan="6">No eligible donors found.</td></tr>`}
+      </table></div>`;
+  },
+
+  donations() {
+    const rows = [...S.donations].reverse();
+    return `<div class="card"><table>
+      <tr><th>#</th><th>Donor</th><th>Group</th><th>Patient</th><th>Hospital</th><th>Date</th><th>Status</th></tr>
+      ${rows.map(n=>{
+        const d = S.donors.find(x=>x.donor_id===n.donor_id)||{};
+        const r = S.requests.find(x=>x.request_id===n.request_id)||{};
+        return `<tr><td>${n.donation_id}</td><td>${esc(d.name)}</td><td>${d.blood_group||""}</td>
+          <td>${esc(r.patient_name)}</td><td>${esc(r.hospital_name)}</td><td>${n.donation_date}</td><td>${n.status}</td></tr>`;
+      }).join("") || `<tr><td colspan="7">No donations yet.</td></tr>`}
+      </table></div>`;
+  }
+};
+
+function render() {
+  document.querySelectorAll("[data-nav]").forEach(a =>
+    a.classList.toggle("active", a.dataset.nav === (view==="match" ? "requests" : view)));
+  const app = document.getElementById("app");
+  app.innerHTML = (flash ? `<div class="flash">${esc(flash)}</div>` : "") + views[view]();
+  flash = "";
+  window.scrollTo(0,0);
+}
+function go(v, c={}, msg="") { view = v; ctx = c; flash = msg; render(); }
+
+document.addEventListener("click", e => {
+  const t = e.target.closest("[data-nav],[data-match],[data-mode],[data-donate],#reset");
+  if (!t) return;
+  if (t.dataset.nav) return go(t.dataset.nav);
+  if (t.dataset.match) return go("match", {id:+t.dataset.match, exact:false});
+  if (t.dataset.mode !== undefined) return go("match", {id:ctx.id, exact:t.dataset.mode==="1"});
+  if (t.dataset.donate) {
+    const did = +t.dataset.donate, rid = +t.dataset.req, today = iso(new Date());
+    S.donations.push({donation_id:S.nn++, donor_id:did, request_id:rid, donation_date:today, status:"Completed"});
+    S.donors.find(d=>d.donor_id===did).last_donation_date = today;
+    S.requests.find(r=>r.request_id===rid).status = "Fulfilled";
+    save();
+    return go("donations", {}, "Donation recorded, request marked Fulfilled");
+  }
+  if (t.id === "reset") {
+    e.preventDefault();
+    if (confirm("Reset all data to fresh sample data?")) { S = seed(); save(); go("home", {}, "Sample data reset"); }
+  }
+});
+
+document.addEventListener("submit", e => {
+  e.preventDefault();
+  const f = Object.fromEntries(new FormData(e.target));
+  if (e.target.id === "addDonor") {
+    S.donors.push({donor_id:S.nd++, name:f.name.trim(), blood_group:f.blood_group, phone:f.phone, city:f.city, last_donation_date:f.last||null});
+    save(); go("donors", {}, "Donor added");
+  } else if (e.target.id === "addReq") {
+    S.requests.push({request_id:S.nr++, patient_name:f.patient.trim(), blood_group_needed:f.group, hospital_name:f.hospital, urgency_level:f.urgency, request_date:iso(new Date()), status:"Open"});
+    save(); go("requests", {}, "Request created");
+  } else if (e.target.id === "filter") {
+    go("donors", {f:{bg:f.bg, city:(f.city||"").trim(), only:!!f.only}});
+  }
+});
+
+render();
+</script>
+</body>
+</html>
